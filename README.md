@@ -1,1 +1,1 @@
-# Nazar
+# Nazar - AI Fal Uygulamasi
