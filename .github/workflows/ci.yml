@@ -1,0 +1,96 @@
+name: CI — Nazar
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Flutter Analyze
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.29.0'
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        working-directory: source/frontend
+        run: flutter pub get
+
+      - name: Format check
+        working-directory: source/frontend
+        run: dart format --output=none --set-exit-if-changed .
+
+      - name: Analyze
+        working-directory: source/frontend
+        run: flutter analyze --no-fatal-infos
+
+  test:
+    name: Flutter Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.29.0'
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        working-directory: source/frontend
+        run: flutter pub get
+
+      - name: Run tests
+        working-directory: source/frontend
+        run: |
+          flutter test --coverage \
+            --dart-define=APP_ENV=dev \
+            --dart-define=SUPABASE_URL=https://mock.supabase.co \
+            --dart-define=SUPABASE_ANON_KEY=mock_key \
+            --dart-define=REVENUECAT_APPLE_KEY=mock_ios \
+            --dart-define=REVENUECAT_GOOGLE_KEY=mock_android
+
+  build-check:
+    name: Android Debug Build
+    runs-on: ubuntu-latest
+    needs: [analyze, test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.29.0'
+          channel: stable
+          cache: true
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install dependencies
+        working-directory: source/frontend
+        run: flutter pub get
+
+      - name: Build debug APK
+        working-directory: source/frontend
+        run: |
+          flutter build apk --debug \
+            --dart-define=APP_ENV=dev \
+            --dart-define=SUPABASE_URL=https://mock.supabase.co \
+            --dart-define=SUPABASE_ANON_KEY=mock_key \
+            --dart-define=REVENUECAT_APPLE_KEY=mock_ios \
+            --dart-define=REVENUECAT_GOOGLE_KEY=mock_android

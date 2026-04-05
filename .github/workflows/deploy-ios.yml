@@ -1,0 +1,60 @@
+name: Deploy iOS — Nazar
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+jobs:
+  release-ios:
+    name: iOS → App Store
+    runs-on: macos-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version
+        id: version
+        run: |
+          TAG=${{ github.ref_name }}
+          echo "version=${TAG#v}" >> $GITHUB_OUTPUT
+          echo "build_number=$(date -u +%Y%m%d%H%M)" >> $GITHUB_OUTPUT
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.29.0'
+          channel: stable
+          cache: true
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+          working-directory: source/frontend/ios
+
+      - name: Install Flutter dependencies
+        working-directory: source/frontend
+        run: flutter pub get
+
+      - name: Write ASC API key
+        run: |
+          mkdir -p source/frontend/ios/fastlane/keys
+          echo '${{ secrets.ASC_API_KEY_JSON }}' \
+            > source/frontend/ios/fastlane/keys/asc_api_key.json
+
+      - name: Fastlane release
+        working-directory: source/frontend/ios
+        env:
+          ASC_KEY_ID:                    ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID:                 ${{ secrets.ASC_ISSUER_ID }}
+          MATCH_PASSWORD:                ${{ secrets.MATCH_PASSWORD }}
+          APP_VERSION:                   ${{ steps.version.outputs.version }}
+          BUILD_NUMBER:                  ${{ steps.version.outputs.build_number }}
+          DART_DEFINE_APP_ENV:           prod
+          DART_DEFINE_SUPABASE_URL:      ${{ secrets.PROD_SUPABASE_URL }}
+          DART_DEFINE_SUPABASE_ANON_KEY: ${{ secrets.PROD_SUPABASE_ANON_KEY }}
+          DART_DEFINE_RC_IOS_KEY:        ${{ secrets.PROD_RC_KEY_IOS }}
+          DART_DEFINE_ADMOB_APP_IOS:     ${{ secrets.PROD_ADMOB_APP_ID_IOS }}
+        run: bundle exec fastlane release

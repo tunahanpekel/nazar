@@ -1,0 +1,6 @@
+git_url        "git@github.com:your-org/nazar-certificates.git"
+storage_mode   "git"
+type           "appstore"
+app_identifier ["com.nazar.fal"]
+username       ENV["APPLE_ID"]
+readonly       true

@@ -1,0 +1,89 @@
+name: Deploy Android — Nazar
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+jobs:
+  validate-tag:
+    name: Verify tag is on main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check tag is on main
+        run: |
+          TAG=${{ github.ref_name }}
+          if ! git branch -r --contains "refs/tags/$TAG" | grep -q "origin/main"; then
+            echo "ERROR: Tag $TAG is not on main. Aborting."
+            exit 1
+          fi
+
+  release-android:
+    name: Android → Play Store
+    runs-on: ubuntu-latest
+    environment: production
+    needs: validate-tag
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version
+        id: version
+        run: |
+          TAG=${{ github.ref_name }}
+          echo "version=${TAG#v}" >> $GITHUB_OUTPUT
+          echo "build_number=$(date -u +%Y%m%d%H%M)" >> $GITHUB_OUTPUT
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.29.0'
+          channel: stable
+          cache: true
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+          working-directory: source/frontend/android
+
+      - name: Install Flutter dependencies
+        working-directory: source/frontend
+        run: flutter pub get
+
+      - name: Decode keystore
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode \
+            > source/frontend/android/app/release.jks
+
+      - name: Write Play Store service account key
+        run: |
+          mkdir -p source/frontend/android/fastlane/keys
+          echo '${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}' \
+            > source/frontend/android/fastlane/keys/play_store_key.json
+
+      - name: Fastlane release
+        working-directory: source/frontend/android
+        env:
+          KEYSTORE_PATH:                 app/release.jks
+          KEYSTORE_PASSWORD:             ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS:                     ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD:                  ${{ secrets.ANDROID_KEY_PASSWORD }}
+          APP_VERSION:                   ${{ steps.version.outputs.version }}
+          BUILD_NUMBER:                  ${{ steps.version.outputs.build_number }}
+          DART_DEFINE_APP_ENV:           prod
+          DART_DEFINE_SUPABASE_URL:      ${{ secrets.PROD_SUPABASE_URL }}
+          DART_DEFINE_SUPABASE_ANON_KEY: ${{ secrets.PROD_SUPABASE_ANON_KEY }}
+          DART_DEFINE_RC_ANDROID_KEY:    ${{ secrets.PROD_RC_KEY_ANDROID }}
+          DART_DEFINE_ADMOB_APP_ANDROID: ${{ secrets.PROD_ADMOB_APP_ID_ANDROID }}
+        run: bundle exec fastlane release
