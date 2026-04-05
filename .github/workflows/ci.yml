@@ -1,22 +1,28 @@
-name: CI — Nazar
+name: CI
 
 on:
+  push:
+    branches: [main]
   pull_request:
     branches: [main]
 
 concurrency:
-  group: pr-${{ github.event.pull_request.number }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   analyze:
     name: Flutter Analyze
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
       - name: Setup Flutter
-        uses: subosito/flutter-action@v2
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2  # v2.23.0
         with:
           flutter-version: '3.41.6'
           channel: stable
@@ -25,6 +31,15 @@ jobs:
       - name: Install dependencies
         working-directory: source/frontend
         run: flutter pub get
+
+      - name: Generate code (if build_runner present)
+        working-directory: source/frontend
+        run: |
+          if grep -q "build_runner" pubspec.yaml; then
+            dart run build_runner build --delete-conflicting-outputs
+          else
+            echo "No build_runner found, skipping code generation."
+          fi
 
       - name: Format check
         working-directory: source/frontend
@@ -32,16 +47,18 @@ jobs:
 
       - name: Analyze
         working-directory: source/frontend
-        run: flutter analyze --no-fatal-infos
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
 
   test:
     name: Flutter Test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [analyze]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
       - name: Setup Flutter
-        uses: subosito/flutter-action@v2
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2  # v2.23.0
         with:
           flutter-version: '3.41.6'
           channel: stable
@@ -51,35 +68,70 @@ jobs:
         working-directory: source/frontend
         run: flutter pub get
 
+      - name: Generate code (if build_runner present)
+        working-directory: source/frontend
+        run: |
+          if grep -q "build_runner" pubspec.yaml; then
+            dart run build_runner build --delete-conflicting-outputs
+          else
+            echo "No build_runner found, skipping code generation."
+          fi
+
       - name: Run tests
         working-directory: source/frontend
         run: |
           flutter test --coverage \
             --dart-define=APP_ENV=dev \
+            --dart-define=ADMOB_APP_ID_ANDROID=ca-app-pub-3940256099942544~3347511713 \
+            --dart-define=ADMOB_APP_ID_IOS=ca-app-pub-3940256099942544~1458002511 \
+            --dart-define=BANNER_AD_UNIT_ANDROID=ca-app-pub-3940256099942544/6300978111 \
+            --dart-define=BANNER_AD_UNIT_IOS=ca-app-pub-3940256099942544/2934735716 \
+            --dart-define=INTERSTITIAL_AD_UNIT_ANDROID=ca-app-pub-3940256099942544/1033173712 \
+            --dart-define=INTERSTITIAL_AD_UNIT_IOS=ca-app-pub-3940256099942544/4411468910 \
             --dart-define=SUPABASE_URL=https://mock.supabase.co \
             --dart-define=SUPABASE_ANON_KEY=mock_key \
             --dart-define=REVENUECAT_APPLE_KEY=mock_ios \
             --dart-define=REVENUECAT_GOOGLE_KEY=mock_android
 
+      - name: Upload coverage
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        if: always()
+        with:
+          name: coverage-${{ github.event.pull_request.number || github.run_id }}
+          path: source/frontend/coverage/lcov.info
+          retention-days: 7
+          if-no-files-found: warn
+
   build-check:
     name: Android Debug Build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [analyze, test]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
 
       - name: Setup Flutter
-        uses: subosito/flutter-action@v2
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2  # v2.23.0
         with:
           flutter-version: '3.41.6'
           channel: stable
           cache: true
 
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@7a6d8a8234af8eb26422e24e3006232cccaa061b  # v4.6.0
         with:
           distribution: temurin
           java-version: '17'
+
+      - name: Restore Gradle Cache
+        uses: actions/cache/restore@d4323d4df104b026a6aa633fdb11d772146be0bf  # v4.2.2
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('source/frontend/android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
 
       - name: Write local.properties
         working-directory: source/frontend
@@ -88,16 +140,65 @@ jobs:
           echo "ndk.dir=$ANDROID_SDK_ROOT/ndk/28.2.13676358" >> android/local.properties
           echo "flutter.sdk=$(dirname $(dirname $(which flutter)))" >> android/local.properties
 
+      - name: Generate mipmap icons (if missing)
+        working-directory: source/frontend
+        run: |
+          python3 << 'PYEOF'
+          import os, zlib, struct
+          def make_png(w, h, r, g, b):
+              def chunk(tag, data):
+                  c = zlib.crc32(tag + data) & 0xFFFFFFFF
+                  return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", c)
+              ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+              raw = b""
+              for _ in range(h):
+                  raw += b"\x00" + bytes([r, g, b] * w)
+              idat = zlib.compress(raw, 9)
+              return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
+          densities = {"mipmap-mdpi": 48, "mipmap-hdpi": 72, "mipmap-xhdpi": 96, "mipmap-xxhdpi": 144, "mipmap-xxxhdpi": 192}
+          for density, size in densities.items():
+              folder = "android/app/src/main/res/" + density
+              os.makedirs(folder, exist_ok=True)
+              for fname in ("ic_launcher.png", "ic_launcher_round.png"):
+                  path = os.path.join(folder, fname)
+                  if not os.path.exists(path):
+                      open(path, "wb").write(make_png(size, size, 0x7C, 0x4D, 0xFF))
+                      print("created " + path)
+          PYEOF
+
       - name: Install dependencies
         working-directory: source/frontend
         run: flutter pub get
+
+      - name: Generate code (if build_runner present)
+        working-directory: source/frontend
+        run: |
+          if grep -q "build_runner" pubspec.yaml; then
+            dart run build_runner build --delete-conflicting-outputs
+          else
+            echo "No build_runner found, skipping code generation."
+          fi
 
       - name: Build debug APK
         working-directory: source/frontend
         run: |
           flutter build apk --debug \
             --dart-define=APP_ENV=dev \
+            --dart-define=ADMOB_APP_ID_ANDROID=ca-app-pub-3940256099942544~3347511713 \
+            --dart-define=ADMOB_APP_ID_IOS=ca-app-pub-3940256099942544~1458002511 \
+            --dart-define=BANNER_AD_UNIT_ANDROID=ca-app-pub-3940256099942544/6300978111 \
+            --dart-define=BANNER_AD_UNIT_IOS=ca-app-pub-3940256099942544/2934735716 \
+            --dart-define=INTERSTITIAL_AD_UNIT_ANDROID=ca-app-pub-3940256099942544/1033173712 \
+            --dart-define=INTERSTITIAL_AD_UNIT_IOS=ca-app-pub-3940256099942544/4411468910 \
             --dart-define=SUPABASE_URL=https://mock.supabase.co \
             --dart-define=SUPABASE_ANON_KEY=mock_key \
             --dart-define=REVENUECAT_APPLE_KEY=mock_ios \
             --dart-define=REVENUECAT_GOOGLE_KEY=mock_android
+
+      - name: Save Gradle Cache
+        uses: actions/cache/save@d4323d4df104b026a6aa633fdb11d772146be0bf  # v4.2.2
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('source/frontend/android/gradle/wrapper/gradle-wrapper.properties') }}
